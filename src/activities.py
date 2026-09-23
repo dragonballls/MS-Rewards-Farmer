@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 
 from selenium.common import (
     ElementClickInterceptedException,
@@ -171,8 +172,8 @@ class Activities:
         return None
 
     def _click_locator(self, locator, timeout=8):
-        end = __import__("time").time() + timeout
-        while __import__("time").time() < end:
+        end = time.time() + timeout
+        while time.time() < end:
             try:
                 element = self._find_visible([locator])
                 if element is not None:
@@ -376,18 +377,52 @@ class Activities:
             )
             self.browser.utils.goToRewards()
 
-        for item in todo:
-            clicked = self._click_activity_anchor(item)
-            if not clicked:
-                logging.warning(
-                    "[ACTIVITY] No anchor found for '%s' (token=%r) — skipping",
-                    cleanupActivityTitle(item.title), item.url_selector_token,
+        remaining = list(todo)
+        for pass_number in range(1, 3):
+            next_remaining = []
+            for item in remaining:
+                clicked = self._click_activity_anchor(item)
+                if not clicked:
+                    logging.warning(
+                        "[ACTIVITY] No anchor found for '%s' (token=%r) — skipping",
+                        cleanupActivityTitle(item.title), item.url_selector_token,
+                    )
+                    next_remaining.append(item)
+                elif not self._wait_until_item_completed(item, timeout=8):
+                    logging.warning(
+                        "[ACTIVITY] '%s' was opened but is still not marked complete",
+                        cleanupActivityTitle(item.title),
+                    )
+                    next_remaining.append(item)
+
+            if not next_remaining:
+                remaining = []
+                break
+
+            if pass_number < 2:
+                logging.info(
+                    "[ACTIVITIES] %d Daily Set item(s) still incomplete; refreshing and retrying",
+                    len(next_remaining),
                 )
-            elif not self._wait_until_item_completed(item, timeout=8):
-                logging.warning(
-                    "[ACTIVITY] '%s' was opened but is still not marked complete",
-                    cleanupActivityTitle(item.title),
-                )
+                dashboard = self.browser.utils.getDashboardData()
+                status_by_offer = {
+                    item.offer_id: item.is_completed
+                    for item in dashboard.todays_daily_set()
+                }
+                remaining = [
+                    item
+                    for item in next_remaining
+                    if not status_by_offer.get(item.offer_id, False)
+                ]
+            else:
+                remaining = next_remaining
+
+        if remaining:
+            logging.warning(
+                "[ACTIVITIES] %d Daily Set item(s) remain incomplete after retries: %s",
+                len(remaining),
+                [cleanupActivityTitle(item.title) for item in remaining],
+            )
 
         logging.info("[ACTIVITIES] Done")
 
