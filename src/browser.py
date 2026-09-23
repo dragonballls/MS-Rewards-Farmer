@@ -120,6 +120,9 @@ class Browser:
         options.add_argument("--disable-features=PrivacySandboxSettings4")
         options.add_argument("--disable-http2")
         options.add_argument("--disable-search-engine-choice-screen")  # 153
+        # Rewards Daily Set activities may open the Bing activity in a new tab.
+        # Keep popup suppression from silently leaving the driver on the dashboard.
+        options.add_argument("--disable-popup-blocking")
         options.page_load_strategy = "normal"
 
         seleniumwireOptions: dict[str, Any] = {"verify_ssl": False}
