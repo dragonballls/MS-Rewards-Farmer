@@ -147,6 +147,20 @@ class Activities:
         except TimeoutException:
             pass
 
+        # Microsoft hydrates the Bing-hosted quiz/poll module after the SERP is ready.
+        # Wait for that module explicitly instead of starting the solver against an
+        # otherwise-complete document, which is the failure seen on current Bing.
+        try:
+            WebDriverWait(self.webdriver, 20).until(
+                lambda d: bool(d.find_elements(By.CSS_SELECTOR, ".btp_card, .btom_card, .btq_main"))
+                or "bing.com/search" not in d.current_url.lower()
+            )
+        except TimeoutException:
+            logging.debug(
+                "[ACTIVITY] No current Bing interactive module appeared for '%s' within 20s",
+                cleanupActivityTitle(item.title),
+            )
+
         # Daily Poll / Supersonic and other quiz-style cards require interaction
         # after the Rewards card opens. Complete the quiz/poll before closing the
         # destination tab; otherwise the dashboard card remains incomplete.
@@ -226,7 +240,15 @@ class Activities:
                 try:
                     for element in self.webdriver.find_elements(*locator):
                         try:
-                            if element.is_displayed() and element.is_enabled():
+                            # Match the maintained September 2026 Bing module pattern:
+                            # the clickable child is a real anchor and must be on-screen.
+                            rect = element.rect
+                            if (
+                                element.is_displayed()
+                                and element.is_enabled()
+                                and rect.get("width", 0) > 0
+                                and rect.get("height", 0) > 0
+                            ):
                                 return element
                         except StaleElementReferenceException:
                             continue
@@ -243,14 +265,33 @@ class Activities:
                 pass
 
         # Current Bing poll: one visible choice is the whole activity.
+        # Wait specifically for a live poll choice. The poll module can be
+        # present before its choices hydrate.
+        try:
+            WebDriverWait(self.webdriver, 15).until(lambda d: visible(poll_selectors) is not None)
+        except TimeoutException:
+            pass
         poll = visible(poll_selectors)
         if poll:
             before_url, before_source = self.webdriver.current_url, self.webdriver.page_source
             try:
+                self.webdriver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center',inline:'center'});", poll
+                )
                 ActionChains(self.webdriver).move_to_element(poll).click().perform()
-                changed(before_url, before_source)
-                logging.info("[ACTIVITY] Completed poll '%s'", title)
-                return True
+                changed(before_url, before_source, timeout=12)
+                try:
+                    WebDriverWait(self.webdriver, 10).until(
+                        lambda d: bool(d.find_elements(By.CSS_SELECTOR, ".btp_voted, .btp_percentage, .btp_selected"))
+                        or d.current_url != before_url
+                    )
+                except TimeoutException:
+                    pass
+                if self.webdriver.current_url != before_url or self.webdriver.find_elements(
+                    By.CSS_SELECTOR, ".btp_voted, .btp_percentage, .btp_selected"
+                ):
+                    logging.info("[ACTIVITY] Completed poll '%s'", title)
+                    return True
             except (
                 ElementClickInterceptedException,
                 ElementNotInteractableException,
