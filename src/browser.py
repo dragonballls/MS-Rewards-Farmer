@@ -5,8 +5,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Type
 
-import seleniumwire.undetected_chromedriver as webdriver
-import undetected_chromedriver
+import seleniumwire.webdriver as webdriver
 from selenium.webdriver import ChromeOptions
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.common.exceptions import WebDriverException
@@ -26,7 +25,7 @@ from src.utils import (
 class Browser:
     """WebDriver wrapper class."""
 
-    webdriver: undetected_chromedriver.Chrome
+    webdriver: WebDriver
 
     def __init__(self, mobile: bool, account) -> None:
         # Initialize browser instance
@@ -91,9 +90,9 @@ class Browser:
 
     def browserSetup(
         self,
-    ) -> undetected_chromedriver.Chrome:
+    ) -> WebDriver:
         # Configure and setup the Chrome browser
-        options = undetected_chromedriver.ChromeOptions()
+        options = webdriver.ChromeOptions()
         self.chromeBinary = self.findChromeBinary()
         logging.debug(f"browserSetup: using Chrome binary {self.chromeBinary}")
         options.binary_location = self.chromeBinary
@@ -134,30 +133,13 @@ class Browser:
                 "https": self.proxy,
                 "no_proxy": "localhost,127.0.0.1",
             }
-        driver = None
-
-        if os.path.exists("/.dockerenv"):
-            driver = webdriver.Chrome(
-                options=options,
-                seleniumwire_options=seleniumwireOptions,
-                user_data_dir=self.userDataDir.as_posix(),
-                driver_executable_path="/usr/bin/chromedriver",
-            )
-        else:
-            version = self.getChromeVersion()
-            major = int(version.split(".")[0])
-            logging.debug(f"browserSetup: launching UC Chrome {major} with profile {self.userDataDir}")
-            driver = webdriver.Chrome(
-                options=options,
-                seleniumwire_options=seleniumwireOptions,
-                user_data_dir=self.userDataDir.as_posix(),
-                version_main=major,
-                browser_executable_path=self.chromeBinary,
-                use_subprocess=True,
-                user_multi_procs=True,
-            )
-            logging.debug("browserSetup: UC Chrome launched")
-
+        # Selenium-Wire provides request capture; standard Selenium Chrome avoids the
+        # undetected-Chromedriver binary patch/cache failure seen on Windows.
+        options.add_argument(f"--user-data-dir={self.userDataDir.as_posix()}")
+        driver = webdriver.Chrome(
+            options=options,
+            seleniumwire_options=seleniumwireOptions,
+        )
         seleniumLogger = logging.getLogger("seleniumwire")
         seleniumLogger.setLevel(logging.ERROR)
 
