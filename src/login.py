@@ -163,51 +163,49 @@ class Login:
         # sequential timeouts that would slow down login.
         # =====================================================================
         logging.info("[LOGIN] Navigating to password screen...")
+        post_email_locators = [
+            (By.ID, "idA_PWD_SwitchToCredPicker"),
+            (By.XPATH, "//*[(self::button or @role='button') and contains(normalize-space(.), 'Other ways to sign in')]"),
+            (By.XPATH, "//span[@role='button' and contains(text(), 'Use your password')]"),
+            (By.NAME, "passwd"),
+            (By.ID, "passwordEntry"),
+            (By.CSS_SELECTOR, '[aria-label="Use your password"]'),
+            (By.XPATH, "//*[self::button or self::a or @role='button' or @role='link'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'use your password')]"),
+        ]
         try:
-            result = wait.until(
-                EC.any_of(
-                    EC.element_to_be_clickable((By.ID, "idA_PWD_SwitchToCredPicker")),
-                    EC.element_to_be_clickable((By.XPATH, "//*[(self::button or @role='button') and contains(normalize-space(.), 'Other ways to sign in')]")),
-                    EC.element_to_be_clickable((By.XPATH, "//span[@role='button' and contains(text(), 'Use your password')]")),
-                    EC.element_to_be_clickable((By.NAME, "passwd")),
-                    EC.visibility_of_element_located((By.ID, "passwordEntry")),
-                )
-            )
+            result_locator = self._wait_for_locator(post_email_locators, timeout=10, clickable=True)
         except TimeoutException:
             if self._recover_from_fido_error():
                 logging.info("[LOGIN] Recovered from Microsoft's FIDO/passkey error; continuing with password flow.")
-                result = self._wait_for_password_entry_or_option(WebDriverWait(self.webdriver, 10))
+                result_locator = self._wait_for_locator(post_email_locators, timeout=10, clickable=True)
             else:
                 raise TimeoutException(
                     f"[LOGIN] Unknown post-email screen. URL: {self.webdriver.current_url}, Title: {self.webdriver.title}"
                 )
 
-        el_id = result.get_attribute("id") or ""
-        el_name = result.get_attribute("name") or ""
-        el_text = (result.text or "").strip().lower()
-
-        if el_id == "idA_PWD_SwitchToCredPicker" or "other ways to sign in" in el_text:
-            # Flow A / A': passkey screen ("Sign in another way") or passkey-error
-            # page ("Other ways to sign in"). Both escape to the same credential
-            # picker; from there click "Use your password".
-            logging.debug("[LOGIN] Passkey screen detected, opening credential picker...")
-            result.click()
-            use_password = wait.until(
-                EC.any_of(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, '[aria-label="Use your password"]')),
-                    EC.element_to_be_clickable((By.XPATH, "//span[@role='button' and contains(text(), 'Use your password')]")),
-                    EC.element_to_be_clickable((By.NAME, "passwd")),
-                    EC.visibility_of_element_located((By.ID, "passwordEntry")),
-                )
+        if result_locator in (
+            (By.ID, "idA_PWD_SwitchToCredPicker"),
+            (By.XPATH, "//*[(self::button or @role='button') and contains(normalize-space(.), 'Other ways to sign in')]"),
+        ):
+            logging.debug("[LOGIN] Passkey/alternate-sign-in screen detected, opening credential picker...")
+            self._click_locator(result_locator)
+            password_option = self._wait_for_locator(
+                [
+                    (By.CSS_SELECTOR, '[aria-label="Use your password"]'),
+                    (By.XPATH, "//span[@role='button' and contains(text(), 'Use your password')]"),
+                    (By.NAME, "passwd"),
+                    (By.ID, "passwordEntry"),
+                ],
+                timeout=10,
+                clickable=True,
             )
-            use_password.click()
-        elif el_name == "passwd" or el_id == "passwordEntry":
-            # Flow C: password field directly available
+            if password_option not in ((By.NAME, "passwd"), (By.ID, "passwordEntry")):
+                self._click_locator(password_option)
+        elif result_locator in ((By.NAME, "passwd"), (By.ID, "passwordEntry")):
             logging.debug("[LOGIN] Password field directly available.")
         else:
-            # Flow B: "Use your password" already clickable (e.g. Outlook app screen)
             logging.debug("[LOGIN] 'Use your password' directly available, clicking...")
-            result.click()
+            self._click_locator(result_locator)
 
         # =====================================================================
         # STEP 3: Password entry
