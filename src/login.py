@@ -171,9 +171,13 @@ class Login:
                 )
             )
         except TimeoutException:
-            raise TimeoutException(
-                f"[LOGIN] Unknown post-email screen. URL: {self.webdriver.current_url}, Title: {self.webdriver.title}"
-            )
+            if self._recover_from_fido_error():
+                logging.info("[LOGIN] Recovered from Microsoft's FIDO/passkey error; continuing with password flow.")
+                result = self._wait_for_password_entry_or_option(WebDriverWait(self.webdriver, 10))
+            else:
+                raise TimeoutException(
+                    f"[LOGIN] Unknown post-email screen. URL: {self.webdriver.current_url}, Title: {self.webdriver.title}"
+                )
 
         el_id = result.get_attribute("id") or ""
         el_name = result.get_attribute("name") or ""
@@ -245,12 +249,21 @@ class Login:
         else:
             logging.info("[LOGIN] 2FA check disabled (no TOTP configured), checking for post-login dialogs...")
         requires_2fa = False
+        password_retry_attempted = False
         post_password_state = self._detect_post_password_state(wait)
 
         if post_password_state == "totp":
             requires_2fa = True
+        elif post_password_state == "invalid_password":
+            raise LoginError("[LOGIN] Microsoft rejected the supplied password for this account.")
         elif post_password_state == "password_required":
-            logging.info("[LOGIN] Password-required page detected, retrying password entry...")
+            if password_retry_attempted:
+                raise LoginError(
+                    "[LOGIN] Microsoft returned to the password page after one retry; "
+                    "verify the account credentials or use another sign-in method."
+                )
+            password_retry_attempted = True
+            logging.info("[LOGIN] Password page remained after submission; retrying password entry once...")
             retry_password_field = wait.until(EC.any_of(
                 EC.element_to_be_clickable((By.NAME, "passwd")),
                 EC.element_to_be_clickable((By.ID, "passwordEntry")),
@@ -265,6 +278,13 @@ class Login:
             ))
             submit_btn.click()
             post_password_state = self._detect_post_password_state(wait)
+            if post_password_state == "invalid_password":
+                raise LoginError("[LOGIN] Microsoft rejected the supplied password for this account.")
+            if post_password_state == "password_required":
+                raise LoginError(
+                    "[LOGIN] Microsoft returned to the password page after one retry; "
+                    "verify the account credentials or use another sign-in method."
+                )
             if post_password_state == "totp":
                 requires_2fa = True
         elif post_password_state == "other_ways":
@@ -331,6 +351,57 @@ class Login:
         self._handle_post_login_dialogs(wait)
         self._dismiss_dashboard_overlays()
 
+    def _wait_for_password_entry_or_option(self, wait):
+        return wait.until(
+            EC.any_of(
+                EC.element_to_be_clickable((By.NAME, "passwd")),
+                EC.visibility_of_element_located((By.ID, "passwordEntry")),
+                EC.element_to_be_clickable((By.CSS_SELECTOR, '[aria-label="Use your password"]')),
+                EC.element_to_be_clickable((By.XPATH, "//span[@role='button' and contains(., 'Use your password')]")),
+                EC.element_to_be_clickable(
+                    (
+                        By.XPATH,
+                        "//*[self::button or self::a or @role='button' or @role='link']"
+                        "[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'password')]",
+                    )
+                ),
+            )
+        )
+
+    def _recover_from_fido_error(self) -> bool:
+        url = self.webdriver.current_url.lower()
+        title = (self.webdriver.title or "").lower()
+        if "/bridge/fido" not in url and "something went wrong" not in title:
+            return False
+
+        alternate = self._find_first_visible([
+            (
+                By.XPATH,
+                "//*[self::button or self::a or @role='button' or @role='link']"
+                "[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'sign in another way')]",
+            ),
+            (
+                By.XPATH,
+                "//*[self::button or self::a or @role='button' or @role='link']"
+                "[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'other ways to sign in')]",
+            ),
+            (By.CSS_SELECTOR, "[data-testid='secondaryButton']"),
+        ])
+        if alternate is None:
+            logging.warning("[LOGIN] FIDO/passkey error detected, but no alternate sign-in control was visible.")
+            return False
+
+        try:
+            alternate.click()
+        except Exception:
+            self.webdriver.execute_script("arguments[0].click();", alternate)
+
+        try:
+            self._wait_for_password_entry_or_option(WebDriverWait(self.webdriver, 10))
+            return True
+        except TimeoutException:
+            return False
+
     def _detect_post_password_state(self, wait) -> str:
         def detector(_):
             # Only probe for 2FA screens when a TOTP secret is configured —
@@ -379,9 +450,25 @@ class Login:
                 return "post_login"
 
             page_text = self.webdriver.page_source
+            page_text_lower = page_text.lower()
+
+            invalid_password_markers = (
+                "that password is incorrect",
+                "your account or password is incorrect",
+                "password is incorrect",
+                "incorrect password",
+                "we didn't recognize this account or password",
+            )
+            if any(marker in page_text_lower for marker in invalid_password_markers):
+                return "invalid_password"
+
             if (
                 "sErrorCode\":\"150041032" in page_text
                 or "Please enter the password for your Microsoft account." in page_text
+                or self._find_first_visible([
+                    (By.NAME, "passwd"),
+                    (By.ID, "passwordEntry"),
+                ])
             ):
                 return "password_required"
 
