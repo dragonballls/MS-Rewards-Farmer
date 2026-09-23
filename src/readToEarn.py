@@ -193,8 +193,14 @@ class ReadToEarn:
         mobileApp = makeRequestsSession(
             OAuth2Session(client_id, scope=scope, redirect_uri=redirect_uri)
         )
+        # The Rewards browser session is already authenticated. Request a silent
+        # OAuth authorization so Microsoft reuses that SSO session instead of
+        # selecting an interactive passkey/FIDO challenge.
         authorization_url = mobileApp.authorization_url(
-            authorization_base_url, access_type="offline_access", login_hint=accountName
+            authorization_base_url,
+            access_type="offline_access",
+            login_hint=accountName,
+            prompt="none",
         )[0]
 
         # Get Referer URL from webdriver
