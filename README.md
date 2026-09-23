@@ -211,6 +211,24 @@ accounts: # The accounts to use. You can put zero, one or an infinite number of 
     proxy: http://user:pass@host2:port # replace with your account proxy, or remove it
 ```
 
+
+## Optional adaptive AI fallback
+
+The deterministic browser selectors remain the primary path. When the Bing quiz or poll markup changes, an optional OpenAI-compatible API can help identify the rendered interaction and choose a quiz answer.
+
+Add this to your local `config.yaml` (the file is ignored by Git):
+
+```yaml
+ai:
+  enabled: true
+  api-key: "PASTE_YOUR_API_KEY_HERE"
+  base-url: "https://api.openai.com/v1"
+  model: "gpt-5.6-luna"
+  timeout: 20
+```
+
+The API key is read locally and is not committed by the application. API usage may incur charges from the provider. You can change `base-url` and `model` for another OpenAI-compatible provider.
+
 ## Usage
 
 ```
