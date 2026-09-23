@@ -321,7 +321,10 @@ class Activities:
                 selected,
             ):
                 return None
-            selected.scrollIntoView({"block": "center", "inline": "center"})
+            self.webdriver.execute_script(
+                "arguments[0].scrollIntoView({block:'center',inline:'center'});",
+                selected,
+            )
         except Exception:
             return None
         return selected
