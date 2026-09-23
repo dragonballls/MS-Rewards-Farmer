@@ -192,6 +192,13 @@ DEFAULT_CONFIG: Config = Config(
             "format": "%(asctime)s [%(levelname)s] %(message)s",
             "level": "INFO",
         },
+        "ai": {
+            "enabled": False,
+            "api-key": "",
+            "base-url": "https://api.openai.com/v1",
+            "model": "gpt-5.6-luna",
+            "timeout": 20,
+        },
         "retries": {"backoff-factor": 120, "max": 4, "strategy": "EXPONENTIAL"},
         "cooldown": {"min": 300, "max": 600},
         "channel": {
