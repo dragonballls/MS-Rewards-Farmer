@@ -200,127 +200,162 @@ class Activities:
             pass
 
     def _complete_interactive_activity(self, item: DailySetItem) -> bool:
-        title = cleanupActivityTitle(item.title).lower()
+        """Complete the quiz/poll on the Bing destination page."""
+        title = cleanupActivityTitle(item.title)
         destination = (item.destination or "").lower()
 
-        is_poll = "poll" in title or "pollscenarioid" in destination
+        poll_selectors = [
+            (By.CSS_SELECTOR, ".btp_choices .btp_choice a[href]"),
+            (By.CSS_SELECTOR, ".btp_choices .btp_choice"),
+        ]
+        quiz_selectors = [
+            (By.CSS_SELECTOR, ".btom_opts .btom_opt a[href]"),
+            (By.CSS_SELECTOR, ".btq_opts .btq_opt a[href]"),
+            (By.CSS_SELECTOR, ".btom_opts .btom_opt"),
+            (By.CSS_SELECTOR, ".btq_opts .btq_opt"),
+        ]
+        next_selectors = [
+            (By.CSS_SELECTOR, ".btq_nxtQues button"),
+            (By.CSS_SELECTOR, ".btq_nxtQues a[href]"),
+            (By.CSS_SELECTOR, "button[title='Next']"),
+            (By.CSS_SELECTOR, "[aria-label='Next']"),
+        ]
+
+        def visible(locators):
+            for locator in locators:
+                try:
+                    for element in self.webdriver.find_elements(*locator):
+                        try:
+                            if element.is_displayed() and element.is_enabled():
+                                return element
+                        except StaleElementReferenceException:
+                            continue
+                except (NoSuchElementException, StaleElementReferenceException):
+                    continue
+            return None
+
+        def changed(before_url, before_source, timeout=8):
+            try:
+                WebDriverWait(self.webdriver, timeout).until(
+                    lambda d: d.current_url != before_url or d.page_source != before_source
+                )
+            except TimeoutException:
+                pass
+
+        # Current Bing poll: one visible choice is the whole activity.
+        poll = visible(poll_selectors)
+        if poll:
+            before_url, before_source = self.webdriver.current_url, self.webdriver.page_source
+            try:
+                ActionChains(self.webdriver).move_to_element(poll).click().perform()
+                changed(before_url, before_source)
+                logging.info("[ACTIVITY] Completed poll '%s'", title)
+                return True
+            except (
+                ElementClickInterceptedException,
+                ElementNotInteractableException,
+                StaleElementReferenceException,
+            ):
+                pass
+
+        # Current Bing quiz: each answer navigates/re-renders the SERP. Re-locate
+        # after every click and use the quiz's explicit Next control when a reveal
+        # screen is shown between questions.
+        for _ in range(10):
+            option = visible(quiz_selectors)
+            if option:
+                before_url, before_source = self.webdriver.current_url, self.webdriver.page_source
+                try:
+                    ActionChains(self.webdriver).move_to_element(option).click().perform()
+                    changed(before_url, before_source)
+                    continue
+                except (
+                    ElementClickInterceptedException,
+                    ElementNotInteractableException,
+                    StaleElementReferenceException,
+                ):
+                    continue
+
+            next_button = visible(next_selectors)
+            if next_button:
+                before_url, before_source = self.webdriver.current_url, self.webdriver.page_source
+                try:
+                    ActionChains(self.webdriver).move_to_element(next_button).click().perform()
+                    changed(before_url, before_source)
+                    continue
+                except (
+                    ElementClickInterceptedException,
+                    ElementNotInteractableException,
+                    StaleElementReferenceException,
+                ):
+                    continue
+
+            page_text = (self.webdriver.page_source or "").lower()
+            if any(marker in page_text for marker in (
+                "quizcompletecontainer",
+                "quiz complete",
+                "you got ",
+                "great job",
+            )):
+                logging.info("[ACTIVITY] Completed quiz '%s'", title)
+                return True
+            break
+
+        # Legacy Rewards quiz compatibility.
         is_quiz = (
-            "quiz" in title
+            "quiz" in title.lower()
             or "quiz" in destination
-            or self._find_visible([(By.ID, "rqStartQuiz"), (By.ID, "rqAnswerOption0")]) is not None
+            or self._find_visible([
+                (By.ID, "rqStartQuiz"),
+                (By.ID, "rqAnswerOption0"),
+            ]) is not None
         )
+        if is_quiz:
+            self._click_locator((By.ID, "rqStartQuiz"), timeout=5)
+            for _ in range(12):
+                option = None
+                for index in range(8):
+                    option = self._find_visible([(By.ID, f"rqAnswerOption{index}")])
+                    if option:
+                        break
+                if option is None:
+                    if self._find_visible([
+                        (By.ID, "quizCompleteContainer"),
+                        (By.CSS_SELECTOR, "[data-testid='quizCompleteContainer']"),
+                    ]):
+                        logging.info("[ACTIVITY] Completed quiz '%s'", title)
+                        return True
+                    continue
+                try:
+                    ActionChains(self.webdriver).move_to_element(option).click().perform()
+                    time.sleep(0.5)
+                except (
+                    ElementClickInterceptedException,
+                    ElementNotInteractableException,
+                    StaleElementReferenceException,
+                ):
+                    continue
 
-        if not is_poll and not is_quiz:
-            return True
-
-        if is_poll:
-            poll_locators = [
-                (By.ID, "btoption0"),
-                (By.ID, "btoption1"),
-                (By.ID, "OptionText00"),
-                (By.ID, "OptionText01"),
-                (By.CSS_SELECTOR, "[id^='btoption']"),
-                (By.CSS_SELECTOR, "[id^='OptionText0']"),
-            ]
-            before = self.webdriver.page_source
-            if not self._click_locator_any(poll_locators, timeout=10):
-                logging.warning("[ACTIVITY] Could not select a poll option for '%s'", item.title)
-                return False
-            self._wait_for_activity_change(before, 6)
-            logging.info("[ACTIVITY] Completed poll '%s'", cleanupActivityTitle(item.title))
-            return True
-
-        start_locators = [(By.ID, "rqStartQuiz")]
-        if self._find_visible(start_locators):
-            self._click_locator((By.ID, "rqStartQuiz"), timeout=8)
-            self._wait_for_activity_change("", 3)
-
-        last_signature = None
-        for _ in range(15):
             if self._find_visible([
                 (By.ID, "quizCompleteContainer"),
                 (By.CSS_SELECTOR, "[data-testid='quizCompleteContainer']"),
             ]):
-                logging.info("[ACTIVITY] Completed quiz '%s'", cleanupActivityTitle(item.title))
+                logging.info("[ACTIVITY] Completed quiz '%s'", title)
                 return True
 
-            options = []
-            for index in range(8):
-                try:
-                    element = self._find_visible([(By.ID, f"rqAnswerOption{index}")])
-                    if element is not None:
-                        options.append(element)
-                except Exception:
-                    continue
+        # URL offers are complete by opening them. Only known interactive
+        # activities should report failure.
+        if (
+            "poll" not in title.lower()
+            and "quiz" not in title.lower()
+            and "dsetqu" not in destination
+        ):
+            return True
 
-            if not options:
-                # Some quiz variants expose answer buttons through generic roles.
-                for element in self.webdriver.find_elements(
-                    By.CSS_SELECTOR, "[role='button'], button"
-                ):
-                    try:
-                        text = (element.text or "").strip()
-                        if element.is_displayed() and element.is_enabled() and text:
-                            if "next" not in text.lower() and "close" not in text.lower():
-                                options.append(element)
-                    except StaleElementReferenceException:
-                        continue
-
-            if not options:
-                page_text = self.webdriver.page_source.lower()
-                if "you earned" in page_text or "great job" in page_text:
-                    return True
-                continue
-
-            signature = tuple(
-                (
-                    (o.get_attribute("data-option") or "").strip(),
-                    (o.text or "").strip(),
-                    (o.get_attribute("iscorrectoption") or "").lower(),
-                )
-                for o in options
-            )
-            if signature == last_signature and len(options) > 1:
-                # Try the next option when the previous click did not advance.
-                options = options[1:] + options[:1]
-            last_signature = signature
-
-            # Prefer options explicitly marked correct by the Rewards quiz payload.
-            chosen = None
-            for option in options:
-                correct = (
-                    (option.get_attribute("iscorrectoption") or "").lower() == "true"
-                    or "correctanswer" in (option.get_attribute("class") or "").lower()
-                )
-                if correct:
-                    chosen = option
-                    break
-
-            # Some quiz variants expose the correct answer as data in the page.
-            if chosen is None:
-                match = re.search(
-                    r'"correctAnswer"\s*:\s*"([^"]+)"',
-                    self.webdriver.page_source,
-                    re.IGNORECASE,
-                )
-                if match:
-                    correct_answer = match.group(1)
-                    for option in options:
-                        if option.get_attribute("data-option") == correct_answer:
-                            chosen = option
-                            break
-
-            if chosen is None:
-                chosen = options[0]
-
-            before = self.webdriver.page_source
-            try:
-                ActionChains(self.webdriver).move_to_element(chosen).click().perform()
-            except StaleElementReferenceException:
-                continue
-            self._wait_for_activity_change(before, 4)
-
-        logging.warning("[ACTIVITY] Quiz '%s' did not reach a completion state", item.title)
+        logging.warning(
+            "[ACTIVITY] Interactive activity '%s' did not reach a completion state",
+            title,
+        )
         return False
 
     def _click_locator_any(self, locators, timeout=8):
