@@ -2,6 +2,7 @@ import logging
 import random
 import secrets
 import time
+from urllib.parse import parse_qs, urlparse
 
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
@@ -37,6 +38,22 @@ class ReadToEarn:
         self.webdriver = browser.webdriver
         self.activities = Activities(browser)
 
+
+    def _find_captured_redirect(self):
+        """Return the latest OAuth code redirect captured by Selenium Wire."""
+        try:
+            requests = list(self.webdriver.requests)
+        except Exception:
+            return None
+        for request in reversed(requests):
+            url = getattr(request, "url", "") or ""
+            if not url.startswith("https://login.live.com/oauth20_desktop.srf"):
+                continue
+            query = parse_qs(urlparse(url).query)
+            if query.get("code", [None])[0]:
+                logging.info("[READ TO EARN] Captured OAuth authorization-code redirect before browser navigation.")
+                return url
+        return None
 
     def _find_visible(self, locators):
         for by, selector in locators:
@@ -203,58 +220,65 @@ class ReadToEarn:
             prompt="none",
         )[0]
 
-        # Get Referer URL from webdriver
+        # Clear captured requests so a stale OAuth code cannot belong to another run.
+        try:
+            del self.webdriver.requests
+        except Exception:
+            pass
+
+        # Microsoft can issue the short-lived code redirect and immediately navigate
+        # to ?removed=true. Capture the redirect at the network layer before it vanishes.
         self.webdriver.get(authorization_url)
         count = 0
         oauth_login_recovered = False
-        while True:
+        redirect_response = None
+        while count < 20:
             current_url = self.webdriver.current_url
-            if current_url.startswith(
-                "https://login.live.com/oauth20_desktop.srf?code="
-            ):
+
+            if current_url.startswith("https://login.live.com/oauth20_desktop.srf?code="):
                 redirect_response = current_url
                 break
 
-            # Microsoft may route this secondary OAuth authorization through its
-            # passkey/FIDO flow even though the Rewards dashboard session is already
-            # authenticated. Recover by using the account's normal password method.
+            redirect_response = self._find_captured_redirect()
+            if redirect_response:
+                break
+
             if not oauth_login_recovered and self._is_fido_login_page():
                 logging.info("[READ TO EARN] OAuth reached Microsoft's FIDO/passkey page; switching to password sign-in.")
                 if self._complete_fido_password_flow():
                     oauth_login_recovered = True
+                    count = 0
                     continue
 
-            # Some OAuth variants show the alternate-method chooser without the
-            # /fido/ URL. Handle it the same way.
             if not oauth_login_recovered and self._is_alternate_signin_page():
                 logging.info("[READ TO EARN] OAuth reached Microsoft's alternate sign-in chooser; selecting password.")
                 if self._complete_alternate_password_flow():
                     oauth_login_recovered = True
+                    count = 0
                     continue
 
-            logging.info("[READ TO EARN] Waiting for Login (URL: %s)", current_url)
-            time.sleep(1)
+            logging.info("[READ TO EARN] Waiting for OAuth redirect (URL: %s)", current_url)
+            time.sleep(0.5)
             count += 1
-            if count >= 15:
-                # Capture the blocking page state before giving up, so the
-                # failure is diagnosable instead of a contextless exception.
-                visible_buttons = []
-                for b in self.webdriver.find_elements(By.XPATH, "//button | //*[@role='button']"):
-                    try:
-                        if b.is_displayed():
-                            visible_buttons.append(
-                                (b.text or "").strip()
-                                or b.get_attribute("id")
-                                or b.get_attribute("data-testid")
-                            )
-                    except Exception:
-                        continue
-                logging.error(
-                    "[READ TO EARN] Stuck waiting for OAuth redirect. "
-                    "URL: %s | Title: %s | visible buttons: %s",
-                    self.webdriver.current_url, self.webdriver.title, visible_buttons,
-                )
-                raise Exception("Stuck in waiting for login")
+
+        if not redirect_response:
+            visible_buttons = []
+            for b in self.webdriver.find_elements(By.XPATH, "//button | //*[@role='button']"):
+                try:
+                    if b.is_displayed():
+                        visible_buttons.append(
+                            (b.text or "").strip()
+                            or b.get_attribute("id")
+                            or b.get_attribute("data-testid")
+                        )
+                except Exception:
+                    continue
+            logging.error(
+                "[READ TO EARN] Stuck waiting for OAuth redirect. "
+                "URL: %s | Title: %s | visible buttons: %s",
+                self.webdriver.current_url, self.webdriver.title, visible_buttons,
+            )
+            raise Exception("Stuck in waiting for login")
 
         logging.info("[READ TO EARN] Logged-in successfully !")
         token = mobileApp.fetch_token(
