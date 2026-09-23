@@ -64,7 +64,12 @@ class Login:
                 logging.info("[LOGIN] Already logged-in")
             else:
                 logging.info("[LOGIN] Logging-in...")
-                self.execute_login()
+                try:
+                    self.execute_login()
+                except StaleElementReferenceException:
+                    logging.warning("[LOGIN] Microsoft replaced the sign-in DOM; restarting the login flow once...")
+                    self.webdriver.get(REWARDS_DASHBOARD_URL)
+                    self.execute_login()
                 logging.info("[LOGIN] Logged-in successfully!")
         except Exception as e:
             logging.error(f"Error during login: {e}")
@@ -165,17 +170,27 @@ class Login:
         logging.info("[LOGIN] Navigating to password screen...")
         post_email_locators = [
             (By.ID, "idA_PWD_SwitchToCredPicker"),
-            (By.XPATH, "//*[(self::button or @role='button') and contains(normalize-space(.), 'Other ways to sign in')]"),
-            (By.XPATH, "//span[@role='button' and contains(text(), 'Use your password')]"),
+            (By.XPATH, "//*[(self::button or @role='button') and contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'other ways to sign in')]"),
+            (By.XPATH, "//span[@role='button' and contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'use your password')]"),
             (By.NAME, "passwd"),
             (By.ID, "passwordEntry"),
             (By.CSS_SELECTOR, '[aria-label="Use your password"]'),
             (By.XPATH, "//*[self::button or self::a or @role='button' or @role='link'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'use your password')]"),
+            (By.XPATH, "//*[self::button or self::a or @role='button' or @role='link'][normalize-space()='Password']"),
+            (By.XPATH, "//*[self::button or self::a or @role='button' or @role='link'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'password')]"),
         ]
         try:
             result_locator = self._wait_for_locator(post_email_locators, timeout=10, clickable=True)
         except TimeoutException:
-            if self._recover_from_fido_error():
+            title = (self.webdriver.title or "").strip().lower()
+            if (
+                "sign in another way" in title
+                or "something went wrong" in title
+                or "/bridge/fido" in self.webdriver.current_url.lower()
+            ):
+                logging.info("[LOGIN] Alternate sign-in chooser detected; selecting the available password option.")
+                result_locator = self._wait_for_locator(post_email_locators, timeout=15, clickable=True)
+            elif self._recover_from_fido_error():
                 logging.info("[LOGIN] Recovered from Microsoft's FIDO/passkey error; continuing with password flow.")
                 result_locator = self._wait_for_locator(post_email_locators, timeout=10, clickable=True)
             else:
@@ -185,18 +200,20 @@ class Login:
 
         if result_locator in (
             (By.ID, "idA_PWD_SwitchToCredPicker"),
-            (By.XPATH, "//*[(self::button or @role='button') and contains(normalize-space(.), 'Other ways to sign in')]"),
+            (By.XPATH, "//*[(self::button or @role='button') and contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'other ways to sign in')]"),
         ):
             logging.debug("[LOGIN] Passkey/alternate-sign-in screen detected, opening credential picker...")
             self._click_locator(result_locator)
             password_option = self._wait_for_locator(
                 [
                     (By.CSS_SELECTOR, '[aria-label="Use your password"]'),
-                    (By.XPATH, "//span[@role='button' and contains(text(), 'Use your password')]"),
+                    (By.XPATH, "//span[@role='button' and contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'use your password')]"),
                     (By.NAME, "passwd"),
                     (By.ID, "passwordEntry"),
+                    (By.XPATH, "//*[self::button or self::a or @role='button' or @role='link'][normalize-space()='Password']"),
+                    (By.XPATH, "//*[self::button or self::a or @role='button' or @role='link'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'password')]"),
                 ],
-                timeout=10,
+                timeout=15,
                 clickable=True,
             )
             if password_option not in ((By.NAME, "passwd"), (By.ID, "passwordEntry")):
@@ -426,7 +443,11 @@ class Login:
     def _recover_from_fido_error(self) -> bool:
         url = self.webdriver.current_url.lower()
         title = (self.webdriver.title or "").lower()
-        if "/bridge/fido" not in url and "something went wrong" not in title:
+        if (
+            "/bridge/fido" not in url
+            and "something went wrong" not in title
+            and "sign in another way" not in title
+        ):
             return False
 
         alternate = self._find_first_visible([
