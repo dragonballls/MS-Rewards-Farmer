@@ -73,12 +73,17 @@ class Browser:
         # Suppress session errors: Chrome may have already crashed before we get here
         try:
             self.webdriver.close()
+        except KeyboardInterrupt:
+            logging.debug("browser.__exit__: interrupted during close; skipping remaining cleanup")
+            return
         except (WebDriverException, ConnectionError, OSError):
             logging.debug("browser.__exit__: close() skipped (session already gone)")
         except Exception:
             logging.debug("browser.__exit__: close() failed", exc_info=True)
         try:
             self.webdriver.quit()
+        except KeyboardInterrupt:
+            logging.debug("browser.__exit__: interrupted during quit")
         except (WebDriverException, ConnectionError, OSError):
             logging.debug("browser.__exit__: quit() skipped (session already gone)")
         except Exception:
