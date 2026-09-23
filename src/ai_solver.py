@@ -44,7 +44,6 @@ class AIAssistant:
         url = f"{self.base_url}/chat/completions"
         payload = {
             "model": self.model,
-            "temperature": 0,
             "messages": [
                 {
                     "role": "system",
