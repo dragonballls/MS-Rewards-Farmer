@@ -105,7 +105,7 @@ class AIAssistant:
         if not text:
             return None
         match = re.search(r"\d+", text)
-        return int(match.group(1)) if match else None
+        return int(match.group(0)) if match else None
 
     def choose_quiz_option(self, question: str, options: list[str]) -> int | None:
         if not self.available or not options:
@@ -114,8 +114,8 @@ class AIAssistant:
         prompt = (
             "Choose the objectively correct answer for this quiz question. "
             "Return exactly the zero-based option number. "
-            "Question:\\n"
-            f"{question[:2000]}\\n\\nOptions:\\n{numbered[:8000]}"
+            "Question:\n"
+            f"{question[:2000]}\n\nOptions:\n{numbered[:8000]}"
         )
         selected = self._integer(self._chat(prompt))
         return selected if selected is not None and 0 <= selected < len(options) else None
@@ -142,7 +142,7 @@ class AIAssistant:
             "most likely a Microsoft Rewards quiz or poll answer choice. "
             "Return exactly its integer index. Prefer an option inside a component "
             "whose class/id suggests a quiz or poll; never choose navigation, "
-            "search results, sign-in, feedback, or unrelated page controls.\\n"
+            "search results, sign-in, feedback, or unrelated page controls.\n"
             f"{json.dumps(compact, ensure_ascii=True)[:18000]}"
         )
         selected = self._integer(self._chat(prompt))
