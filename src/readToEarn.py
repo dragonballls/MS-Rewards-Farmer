@@ -23,7 +23,7 @@ from .utils import makeRequestsSession, cooldown
 # todo Use constant naming style
 client_id = "0000000040170455"
 authorization_base_url = "https://login.live.com/oauth20_authorize.srf"
-token_url = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+token_url = "https://login.live.com/oauth20_token.srf"
 redirect_uri = "https://login.live.com/oauth20_desktop.srf"
 scope = ["service::prod.rewardsplatform.microsoft.com::MBI_SSL"]
 
@@ -210,14 +210,13 @@ class ReadToEarn:
         mobileApp = makeRequestsSession(
             OAuth2Session(client_id, scope=scope, redirect_uri=redirect_uri)
         )
-        # The Rewards browser session is already authenticated. Request a silent
-        # OAuth authorization so Microsoft reuses that SSO session instead of
-        # selecting an interactive passkey/FIDO challenge.
+        # Reuse the authenticated Rewards browser session. Do not force prompt=none:
+        # Microsoft's consumer login can legitimately require an interactive
+        # password/passkey step before issuing the authorization code.
         authorization_url = mobileApp.authorization_url(
             authorization_base_url,
             access_type="offline_access",
             login_hint=accountName,
-            prompt="none",
         )[0]
 
         # Clear captured requests so a stale OAuth code cannot belong to another run.
