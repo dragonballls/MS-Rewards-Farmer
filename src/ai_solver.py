@@ -41,20 +41,29 @@ class AIAssistant:
         if not self.available:
             return None
 
-        url = f"{self.base_url}/chat/completions"
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Return only the requested integer. Do not include markdown, "
-                        "explanation, or extra text."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-        }
+        is_openai = "api.openai.com" in self.base_url.lower()
+        if is_openai:
+            url = f"{self.base_url}/responses"
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "input": prompt,
+            }
+        else:
+            url = f"{self.base_url}/chat/completions"
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Return only the requested integer. Do not include markdown, "
+                            "explanation, or extra text."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            }
+
         try:
             response = requests.post(
                 url,
@@ -67,7 +76,19 @@ class AIAssistant:
             )
             response.raise_for_status()
             data: dict[str, Any] = response.json()
-            content = data["choices"][0]["message"]["content"]
+
+            if is_openai:
+                content = data.get("output_text")
+                if not content:
+                    pieces = []
+                    for item in data.get("output", []):
+                        for part in item.get("content", []):
+                            if isinstance(part, dict) and part.get("type") == "output_text":
+                                pieces.append(str(part.get("text", "")))
+                    content = "".join(pieces)
+            else:
+                content = data["choices"][0]["message"]["content"]
+
             if isinstance(content, list):
                 content = "".join(
                     str(part.get("text", ""))
