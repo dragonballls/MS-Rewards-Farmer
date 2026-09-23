@@ -159,6 +159,12 @@ class ReadToEarn:
             return False
 
     def _complete_fido_password_flow(self):
+        # Prefer a password field/option already exposed by Microsoft's current
+        # FIDO page. Some variants render the password choice without an
+        # "Other ways" button.
+        if self._password_flow(timeout=5):
+            return True
+
         alternate = [
             (
                 By.XPATH,
@@ -177,7 +183,7 @@ class ReadToEarn:
         return self._password_flow(timeout=15)
 
     def _complete_alternate_password_flow(self):
-        return self._complete_fido_password_flow()
+        return self._password_flow(timeout=5) or self._complete_fido_password_flow()
 
     def completeReadToEarn(self):
 
