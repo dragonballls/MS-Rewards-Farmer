@@ -6,6 +6,7 @@ from selenium.common.exceptions import (
     ElementClickInterceptedException,
     ElementNotInteractableException,
     NoSuchElementException,
+    StaleElementReferenceException,
 )
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -91,10 +92,14 @@ class Login:
         # timeouts that would slow down login.
         # =====================================================================
         try:
-            emailField = wait.until(EC.any_of(
-                EC.visibility_of_element_located((By.ID, "usernameEntry")),
-                EC.visibility_of_element_located((By.ID, "i0116")),
-            ))
+            emailLocator = self._wait_for_locator(
+                [
+                    (By.ID, "usernameEntry"),
+                    (By.ID, "i0116"),
+                ],
+                timeout=10,
+                clickable=False,
+            )
         except TimeoutException:
             logging.debug(f"[LOGIN] No email field found. URL: {self.webdriver.current_url}, Title: {self.webdriver.title}")
             current_url = self.webdriver.current_url.lower()
@@ -120,17 +125,15 @@ class Login:
                     f"[LOGIN] No email field and not on a known page. URL: {self.webdriver.current_url}"
                 )
 
-        is_new_login_form = emailField.get_attribute("id") == "usernameEntry"
+        is_new_login_form = emailLocator == (By.ID, "usernameEntry")
         logging.debug(f"[LOGIN] {'New' if is_new_login_form else 'Old'} login form detected.")
 
         logging.info("[LOGIN] Entering email...")
-        emailField.click()
-        emailField.send_keys(self.browser.email)
-        assert emailField.get_attribute("value") == self.browser.email
+        self._set_field(emailLocator, self.browser.email)
         if is_new_login_form:
-            self.utils.waitUntilClickable(By.CSS_SELECTOR, "[data-testid='primaryButton']").click()
+            self._click_locator((By.CSS_SELECTOR, "[data-testid='primaryButton']"))
         else:
-            self.utils.waitUntilClickable(By.ID, "idSIButton9").click()
+            self._click_locator((By.ID, "idSIButton9"))
 
         # =====================================================================
         # STEP 2: Post-email screen - navigate to password entry
@@ -215,15 +218,17 @@ class Login:
         #
         # Submit is always via primaryButton (works for both forms).
         # =====================================================================
-        passwordField = wait.until(EC.any_of(
-            EC.element_to_be_clickable((By.NAME, "passwd")),
-            EC.element_to_be_clickable((By.ID, "passwordEntry")),
-        ))
+        passwordLocator = self._wait_for_locator(
+            [
+                (By.NAME, "passwd"),
+                (By.ID, "passwordEntry"),
+            ],
+            timeout=10,
+            clickable=True,
+        )
         logging.info("[LOGIN] Entering password...")
-        passwordField.click()
-        passwordField.send_keys(self.browser.password)
-        assert passwordField.get_attribute("value") == self.browser.password
-        self.utils.waitUntilClickable(By.CSS_SELECTOR, "[data-testid='primaryButton']").click()
+        self._set_field(passwordLocator, self.browser.password)
+        self._click_locator((By.CSS_SELECTOR, "[data-testid='primaryButton']"))
 
         # =====================================================================
         # STEP 4: Post-password - 2FA or direct post-login
@@ -350,6 +355,58 @@ class Login:
         logging.info("[LOGIN] Handling post-login dialogs...")
         self._handle_post_login_dialogs(wait)
         self._dismiss_dashboard_overlays()
+
+
+    def _wait_for_locator(self, locators, timeout=10, clickable=True):
+        """Wait for a usable locator and refetch the element after DOM re-renders."""
+        def locate(_driver):
+            for locator in locators:
+                try:
+                    for element in self.webdriver.find_elements(*locator):
+                        try:
+                            if element.is_displayed() and (not clickable or element.is_enabled()):
+                                return locator
+                        except StaleElementReferenceException:
+                            continue
+                except (NoSuchElementException, StaleElementReferenceException):
+                    continue
+            return False
+
+        return WebDriverWait(
+            self.webdriver,
+            timeout,
+            ignored_exceptions=(NoSuchElementException, StaleElementReferenceException),
+        ).until(locate)
+
+    def _set_field(self, locator, value, attempts=5):
+        last_error = None
+        for _ in range(attempts):
+            try:
+                element = self.webdriver.find_element(*locator)
+                element.click()
+                element.clear()
+                element.send_keys(value)
+                if element.get_attribute("value") == value:
+                    return
+            except (StaleElementReferenceException, ElementNotInteractableException, NoSuchElementException) as exc:
+                last_error = exc
+                continue
+        if last_error:
+            raise last_error
+        raise TimeoutException(f"[LOGIN] Could not set field: {locator}")
+
+    def _click_locator(self, locator, attempts=5):
+        last_error = None
+        for _ in range(attempts):
+            try:
+                self.webdriver.find_element(*locator).click()
+                return
+            except (StaleElementReferenceException, ElementClickInterceptedException, ElementNotInteractableException, NoSuchElementException) as exc:
+                last_error = exc
+                continue
+        if last_error:
+            raise last_error
+        raise TimeoutException(f"[LOGIN] Could not click locator: {locator}")
 
     def _wait_for_password_entry_or_option(self, wait):
         return wait.until(
