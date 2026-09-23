@@ -13,6 +13,7 @@ from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 
+from src.ai_solver import AIAssistant
 from src.browser import Browser
 from src.constants import REWARDS_DASHBOARD_URL
 from src.rsc import DailySetItem
@@ -32,6 +33,7 @@ class Activities:
     def __init__(self, browser: Browser):
         self.browser = browser
         self.webdriver = browser.webdriver
+        self.ai = AIAssistant()
 
     def _click_activity_anchor(self, item: DailySetItem, reload_fn=None) -> bool:
         """
@@ -218,6 +220,56 @@ class Activities:
                 pass
         return False
 
+    def _interactive_candidates(self):
+        """Return visible, enabled interactive elements and metadata for the AI fallback."""
+        elements = []
+        candidates = []
+        for element in self.webdriver.find_elements(
+            By.CSS_SELECTOR, "a,button,[role='button']"
+        ):
+            try:
+                rect = element.rect
+                text = (element.text or "").strip()
+                title = (element.get_attribute("title") or "").strip()
+                aria = (element.get_attribute("aria-label") or "").strip()
+                if (
+                    not element.is_displayed()
+                    or not element.is_enabled()
+                    or rect.get("width", 0) <= 0
+                    or rect.get("height", 0) <= 0
+                ):
+                    continue
+                elements.append(element)
+                candidates.append({
+                    "tag": element.tag_name,
+                    "text": text[:240],
+                    "title": title[:160],
+                    "aria": aria[:160],
+                    "id": (element.get_attribute("id") or "")[:160],
+                    "class": (element.get_attribute("class") or "")[:320],
+                    "href": (element.get_attribute("href") or "")[:240],
+                })
+            except StaleElementReferenceException:
+                continue
+        return elements, candidates
+
+    def _ai_interactive_element(self, question=""):
+        if not self.ai.available:
+            return None
+        elements, candidates = self._interactive_candidates()
+        index = self.ai.choose_interactive_candidate(candidates)
+        if index is None or index >= len(elements):
+            return None
+        selected = elements[index]
+        try:
+            self.webdriver.execute_script(
+                "arguments[0].scrollIntoView({block:'center',inline:'center'});",
+                selected,
+            )
+        except Exception:
+            pass
+        return selected
+
     def _wait_for_activity_change(self, before_source, timeout=4):
         try:
             WebDriverWait(self.webdriver, timeout).until(
@@ -289,6 +341,10 @@ class Activities:
         except TimeoutException:
             pass
         poll = visible(poll_selectors)
+        if poll is None:
+            poll = self._ai_interactive_element()
+            if poll is not None:
+                logging.info("[ACTIVITY] AI fallback located a poll candidate for '%s'", title)
         if poll:
             before_url, before_source = self.webdriver.current_url, self.webdriver.page_source
             try:
@@ -322,6 +378,45 @@ class Activities:
         for _ in range(10):
             option = visible(quiz_selectors)
             if option:
+                try:
+                    question_nodes = self.webdriver.find_elements(
+                        By.CSS_SELECTOR, ".btom_quest, .btq_quest"
+                    )
+                    question = next(
+                        ((n.text or "").strip() for n in question_nodes if n.is_displayed()),
+                        "",
+                    )
+                except Exception:
+                    question = ""
+
+                # The maintained Bing implementations treat the rendered anchors as
+                # the option set. Let the configured API pick an index when available;
+                # otherwise preserve the deterministic first-option fallback.
+                try:
+                    current_options = []
+                    for selector in quiz_selectors:
+                        for candidate in self.webdriver.find_elements(*selector):
+                            try:
+                                if candidate.is_displayed() and candidate.is_enabled():
+                                    current_options.append(candidate)
+                            except StaleElementReferenceException:
+                                continue
+                        if current_options:
+                            break
+                    if current_options:
+                        texts = [(candidate.text or "").strip()[:500] for candidate in current_options]
+                        selected_index = self.ai.choose_quiz_option(question, texts)
+                        if selected_index is not None:
+                            option = current_options[selected_index]
+                            logging.info(
+                                "[ACTIVITY] AI selected quiz option %d/%d for '%s'",
+                                selected_index + 1,
+                                len(current_options),
+                                title,
+                            )
+                except Exception:
+                    logging.debug("[ACTIVITY] AI quiz selection fallback failed", exc_info=True)
+
                 before_url, before_source = self.webdriver.current_url, self.webdriver.page_source
                 try:
                     ActionChains(self.webdriver).move_to_element(option).click().perform()
@@ -333,6 +428,11 @@ class Activities:
                     StaleElementReferenceException,
                 ):
                     continue
+
+            if option is None:
+                option = self._ai_interactive_element()
+                if option is not None:
+                    logging.info("[ACTIVITY] AI fallback located a quiz candidate for '%s'", title)
 
             next_button = visible(next_selectors)
             if next_button:
