@@ -494,6 +494,19 @@ class Activities:
                 if option is not None:
                     logging.info("[ACTIVITY] AI fallback located a quiz candidate for '%s'", title)
 
+            if option is not None:
+                before_url, before_source = self.webdriver.current_url, self.webdriver.page_source
+                try:
+                    ActionChains(self.webdriver).move_to_element(option).click().perform()
+                    changed(before_url, before_source)
+                    continue
+                except (
+                    ElementClickInterceptedException,
+                    ElementNotInteractableException,
+                    StaleElementReferenceException,
+                ):
+                    continue
+
             next_button = visible(next_selectors)
             if next_button:
                 before_url, before_source = self.webdriver.current_url, self.webdriver.page_source
