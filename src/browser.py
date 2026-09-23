@@ -150,6 +150,8 @@ class Browser:
                 user_data_dir=self.userDataDir.as_posix(),
                 version_main=major,
                 browser_executable_path=self.chromeBinary,
+                use_subprocess=True,
+                user_multi_procs=True,
             )
             logging.debug("browserSetup: UC Chrome launched")
 
