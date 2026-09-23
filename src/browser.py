@@ -84,6 +84,9 @@ class Browser:
     ) -> undetected_chromedriver.Chrome:
         # Configure and setup the Chrome browser
         options = undetected_chromedriver.ChromeOptions()
+        self.chromeBinary = self.findChromeBinary()
+        logging.debug(f"browserSetup: using Chrome binary {self.chromeBinary}")
+        options.binary_location = self.chromeBinary
         options.headless = self.headless
         options.add_argument(f"--lang={self.localeLang}")
         options.add_argument("--log-level=3")
@@ -136,6 +139,7 @@ class Browser:
                 seleniumwire_options=seleniumwireOptions,
                 user_data_dir=self.userDataDir.as_posix(),
                 version_main=major,
+                browser_executable_path=self.chromeBinary,
             )
             logging.debug("browserSetup: UC Chrome launched")
 
@@ -265,9 +269,33 @@ class Browser:
         return sessionsDir
 
     @staticmethod
+    def findChromeBinary() -> str:
+        """Find a locally installed Chrome executable on Windows or PATH."""
+        import shutil
+
+        candidates = [
+            shutil.which("chrome.exe"),
+            shutil.which("chrome"),
+            os.path.join(os.environ.get("PROGRAMFILES", ""), "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+        ]
+
+        for candidate in candidates:
+            if candidate and os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+
+        raise FileNotFoundError(
+            "Google Chrome was not found. Install Chrome or set Chrome's executable on PATH."
+        )
+
+    @staticmethod
     def getChromeVersion() -> str:
         logging.debug("getChromeVersion: starting temporary headless Chrome")
         chrome_options = ChromeOptions()
+        chrome_binary = Browser.findChromeBinary()
+        chrome_options.binary_location = chrome_binary
+        logging.debug(f"getChromeVersion: using Chrome binary {chrome_binary}")
         chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--no-first-run")
