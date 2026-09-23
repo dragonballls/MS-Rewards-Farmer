@@ -111,6 +111,11 @@ class Activities:
                 anchor = self.webdriver.find_elements(
                     By.XPATH, f"//a[contains(@href, '{token}')]"
                 )[0]
+                href = anchor.get_attribute("href") or ""
+                logging.info(
+                    "[ACTIVITY] Clicking destination for '%s': %s",
+                    cleanupActivityTitle(item.title), href[:500],
+                )
                 ActionChains(self.webdriver).move_to_element(anchor).click().perform()
                 break
             except (
@@ -427,6 +432,7 @@ class Activities:
         # after every click and use the quiz's explicit Next control when a reveal
         # screen is shown between questions.
         for _ in range(10):
+            question = ""
             option = visible(quiz_selectors)
             if option:
                 try:
