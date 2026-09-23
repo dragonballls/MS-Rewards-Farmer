@@ -220,13 +220,29 @@ class Activities:
                 pass
         return False
 
-    def _interactive_candidates(self):
-        """Return visible, enabled interactive elements and metadata for the AI fallback."""
+    def _interactive_module_scope(self):
+        """Return the narrowest visible Rewards/Bing quiz or poll container."""
+        selectors = [
+            ".btp_card",
+            ".btom_card",
+            ".btq_main",
+            "#b_wpt_container_ml",
+            "#b_wpt_container",
+        ]
+        for selector in selectors:
+            try:
+                for element in self.webdriver.find_elements(By.CSS_SELECTOR, selector):
+                    if element.is_displayed() and element.rect.get("width", 0) > 0:
+                        return element
+            except (NoSuchElementException, StaleElementReferenceException):
+                continue
+        return None
+
+    def _interactive_candidates(self, scope):
+        """Return only visible controls inside the interactive module scope."""
         elements = []
         candidates = []
-        for element in self.webdriver.find_elements(
-            By.CSS_SELECTOR, "a,button,[role='button']"
-        ):
+        for element in scope.find_elements(By.CSS_SELECTOR, "a[href],button,[role='button']"):
             try:
                 rect = element.rect
                 text = (element.text or "").strip()
@@ -242,32 +258,67 @@ class Activities:
                 elements.append(element)
                 candidates.append({
                     "tag": element.tag_name,
-                    "text": text[:240],
-                    "title": title[:160],
-                    "aria": aria[:160],
+                    "text": text[:500],
+                    "title": title[:200],
+                    "aria": aria[:200],
                     "id": (element.get_attribute("id") or "")[:160],
-                    "class": (element.get_attribute("class") or "")[:320],
-                    "href": (element.get_attribute("href") or "")[:240],
+                    "class": (element.get_attribute("class") or "")[:500],
+                    "href": (element.get_attribute("href") or "")[:300],
                 })
             except StaleElementReferenceException:
                 continue
         return elements, candidates
 
-    def _ai_interactive_element(self, question=""):
+    def _ai_interactive_element(self, question="", quiz=False):
+        """AI fallback that can only select a control inside a Rewards module."""
         if not self.ai.available:
             return None
-        elements, candidates = self._interactive_candidates()
-        index = self.ai.choose_interactive_candidate(candidates)
-        if index is None or index >= len(elements):
+
+        scope = self._interactive_module_scope()
+        if scope is None:
             return None
-        selected = elements[index]
-        try:
-            self.webdriver.execute_script(
-                "arguments[0].scrollIntoView({block:'center',inline:'center'});",
-                selected,
+
+        # Prefer the module's actual options container. This keeps the fallback
+        # from ever selecting search results or navigation controls.
+        option_scope = scope
+        for selector in (".btp_choices", ".btom_opts", ".btq_opts"):
+            try:
+                candidate = scope.find_element(By.CSS_SELECTOR, selector)
+                if candidate.is_displayed():
+                    option_scope = candidate
+                    break
+            except (NoSuchElementException, StaleElementReferenceException):
+                continue
+
+        elements, candidates = self._interactive_candidates(option_scope)
+        if not elements:
+            return None
+
+        if quiz:
+            selected_index = self.ai.choose_quiz_option(
+                question,
+                [c.get("text", "") for c in candidates],
             )
+        else:
+            selected_index = self.ai.choose_interactive_candidate(candidates)
+
+        if selected_index is None or selected_index >= len(elements):
+            return None
+
+        selected = elements[selected_index]
+        try:
+            # Final guard: the selected element must still belong to the module
+            # and remain rendered immediately before clicking.
+            if not self.webdriver.execute_script(
+                "return arguments[0].isConnected && "
+                "arguments[0].getBoundingClientRect().width > 0 && "
+                "arguments[0].getBoundingClientRect().height > 0;",
+                selected,
+            ):
+                return None
+            selected.scrollIntoView({"block": "center", "inline": "center"})
         except Exception:
-            pass
+            return None
         return selected
 
     def _wait_for_activity_change(self, before_source, timeout=4):
@@ -342,7 +393,7 @@ class Activities:
             pass
         poll = visible(poll_selectors)
         if poll is None:
-            poll = self._ai_interactive_element()
+            poll = self._ai_interactive_element(quiz=False)
             if poll is not None:
                 logging.info("[ACTIVITY] AI fallback located a poll candidate for '%s'", title)
         if poll:
@@ -430,7 +481,7 @@ class Activities:
                     continue
 
             if option is None:
-                option = self._ai_interactive_element()
+                option = self._ai_interactive_element(question=question, quiz=True)
                 if option is not None:
                     logging.info("[ACTIVITY] AI fallback located a quiz candidate for '%s'", title)
 
