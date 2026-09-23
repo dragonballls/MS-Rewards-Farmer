@@ -193,7 +193,7 @@ DEFAULT_CONFIG: Config = Config(
             "level": "INFO",
         },
         "ai": {
-            "enabled": False,
+            "enabled": True,
             "api-key": "",
             "base-url": "https://api.openai.com/v1",
             "model": "gpt-5.6-luna",
@@ -776,6 +776,13 @@ def createEmptyConfig(configPath: Path, config: Config) -> None:
                 "backoff-factor": 20,
                 "max": 4,
                 "strategy": "CONSTANT",
+            },
+            "ai": {
+                "enabled": True,
+                "api-key": "PASTE_YOUR_API_KEY_HERE",
+                "base-url": "https://api.openai.com/v1",
+                "model": "gpt-5.6-luna",
+                "timeout": 20,
             },
         }
     )
