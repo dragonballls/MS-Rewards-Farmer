@@ -83,7 +83,7 @@ class AIAssistant:
     def _integer(text: str | None) -> int | None:
         if not text:
             return None
-        match = re.search(r"(?<!\\d)(\\d+)(?!\\d)", text)
+        match = re.search(r"\\d+", text)
         return int(match.group(1)) if match else None
 
     def choose_quiz_option(self, question: str, options: list[str]) -> int | None:
