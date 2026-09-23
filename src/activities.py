@@ -1,5 +1,14 @@
 import logging
-from selenium.common import TimeoutException
+import re
+
+from selenium.common import (
+    ElementClickInterceptedException,
+    ElementNotInteractableException,
+    NoSuchElementException,
+    StaleElementReferenceException,
+    TimeoutException,
+)
+from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 
@@ -89,27 +98,235 @@ class Activities:
                     )
                     return False
 
-        self.webdriver.execute_script("arguments[0].click();", anchor)
+        original_handle = self.webdriver.current_window_handle
+        handles_before = set(self.webdriver.window_handles)
+
+        # React/React-Aria controls require a real pointer click. A JavaScript
+        # click can bypass the event handlers that register the Rewards activity.
+        for attempt in range(3):
+            try:
+                anchor = self.webdriver.find_elements(
+                    By.XPATH, f"//a[contains(@href, '{token}')]"
+                )[0]
+                ActionChains(self.webdriver).move_to_element(anchor).click().perform()
+                break
+            except (
+                StaleElementReferenceException,
+                ElementClickInterceptedException,
+                ElementNotInteractableException,
+                IndexError,
+            ):
+                if attempt == 2:
+                    raise
         logging.info(
             "[ACTIVITY] [%s] Clicked '%s'",
             item.activity_type, cleanupActivityTitle(item.title),
         )
-        # Wait for the destination tab to open and finish loading, then close it.
-        # Points are registered server-side on page load; we just need to let it complete.
+
+        destination_handle = original_handle
         try:
-            WebDriverWait(self.webdriver, 12).until(
-                lambda d: len(d.window_handles) > 1
+            WebDriverWait(self.webdriver, 8).until(
+                lambda d: len(d.window_handles) > len(handles_before)
+                or d.current_window_handle != original_handle
+                or d.current_url != REWARDS_DASHBOARD_URL
             )
-            self.webdriver.switch_to.window(self.webdriver.window_handles[-1])
+        except TimeoutException:
+            pass
+
+        if len(self.webdriver.window_handles) > len(handles_before):
+            destination_handle = next(
+                h for h in self.webdriver.window_handles if h not in handles_before
+            )
+            self.webdriver.switch_to.window(destination_handle)
+
+        try:
             WebDriverWait(self.webdriver, 15).until(
                 lambda d: d.execute_script("return document.readyState") == "complete"
             )
-            self.webdriver.switch_to.window(self.webdriver.window_handles[0])
         except TimeoutException:
-            pass  # no new tab opened (same-tab redirect or instant credit)
+            pass
+
+        # Daily Poll / Supersonic and other quiz-style cards require interaction
+        # after the Rewards card opens. Complete the quiz/poll before closing the
+        # destination tab; otherwise the dashboard card remains incomplete.
+        self._complete_interactive_activity(item)
+
+        if original_handle in self.webdriver.window_handles:
+            self.webdriver.switch_to.window(original_handle)
         self.browser.utils.resetTabs()
         cooldown()
         return True
+
+    def _find_visible(self, locators):
+        for by, selector in locators:
+            try:
+                for element in self.webdriver.find_elements(by, selector):
+                    try:
+                        if element.is_displayed() and element.is_enabled():
+                            return element
+                    except StaleElementReferenceException:
+                        continue
+            except (NoSuchElementException, StaleElementReferenceException):
+                continue
+        return None
+
+    def _click_locator(self, locator, timeout=8):
+        end = __import__("time").time() + timeout
+        while __import__("time").time() < end:
+            try:
+                element = self._find_visible([locator])
+                if element is not None:
+                    ActionChains(self.webdriver).move_to_element(element).click().perform()
+                    return True
+            except (
+                StaleElementReferenceException,
+                ElementClickInterceptedException,
+                ElementNotInteractableException,
+            ):
+                pass
+        return False
+
+    def _wait_for_activity_change(self, before_source, timeout=4):
+        try:
+            WebDriverWait(self.webdriver, timeout).until(
+                lambda d: d.page_source != before_source
+                or self._find_visible([
+                    (By.ID, "quizCompleteContainer"),
+                    (By.CSS_SELECTOR, "[data-testid='quizCompleteContainer']"),
+                ]) is not None
+            )
+        except TimeoutException:
+            pass
+
+    def _complete_interactive_activity(self, item: DailySetItem) -> bool:
+        title = cleanupActivityTitle(item.title).lower()
+        destination = (item.destination or "").lower()
+
+        is_poll = "poll" in title or "pollscenarioid" in destination
+        is_quiz = (
+            "quiz" in title
+            or "quiz" in destination
+            or self._find_visible([(By.ID, "rqStartQuiz"), (By.ID, "rqAnswerOption0")]) is not None
+        )
+
+        if not is_poll and not is_quiz:
+            return True
+
+        if is_poll:
+            poll_locators = [
+                (By.ID, "btoption0"),
+                (By.ID, "btoption1"),
+                (By.ID, "OptionText00"),
+                (By.ID, "OptionText01"),
+                (By.CSS_SELECTOR, "[id^='btoption']"),
+                (By.CSS_SELECTOR, "[id^='OptionText0']"),
+            ]
+            before = self.webdriver.page_source
+            if not self._click_locator_any(poll_locators, timeout=10):
+                logging.warning("[ACTIVITY] Could not select a poll option for '%s'", item.title)
+                return False
+            self._wait_for_activity_change(before, 6)
+            logging.info("[ACTIVITY] Completed poll '%s'", cleanupActivityTitle(item.title))
+            return True
+
+        start_locators = [(By.ID, "rqStartQuiz")]
+        if self._find_visible(start_locators):
+            self._click_locator((By.ID, "rqStartQuiz"), timeout=8)
+            self._wait_for_activity_change("", 3)
+
+        last_signature = None
+        for _ in range(15):
+            if self._find_visible([
+                (By.ID, "quizCompleteContainer"),
+                (By.CSS_SELECTOR, "[data-testid='quizCompleteContainer']"),
+            ]):
+                logging.info("[ACTIVITY] Completed quiz '%s'", cleanupActivityTitle(item.title))
+                return True
+
+            options = []
+            for index in range(8):
+                try:
+                    element = self._find_visible([(By.ID, f"rqAnswerOption{index}")])
+                    if element is not None:
+                        options.append(element)
+                except Exception:
+                    continue
+
+            if not options:
+                # Some quiz variants expose answer buttons through generic roles.
+                for element in self.webdriver.find_elements(
+                    By.CSS_SELECTOR, "[role='button'], button"
+                ):
+                    try:
+                        text = (element.text or "").strip()
+                        if element.is_displayed() and element.is_enabled() and text:
+                            if "next" not in text.lower() and "close" not in text.lower():
+                                options.append(element)
+                    except StaleElementReferenceException:
+                        continue
+
+            if not options:
+                page_text = self.webdriver.page_source.lower()
+                if "you earned" in page_text or "great job" in page_text:
+                    return True
+                continue
+
+            signature = tuple(
+                (
+                    (o.get_attribute("data-option") or "").strip(),
+                    (o.text or "").strip(),
+                    (o.get_attribute("iscorrectoption") or "").lower(),
+                )
+                for o in options
+            )
+            if signature == last_signature and len(options) > 1:
+                # Try the next option when the previous click did not advance.
+                options = options[1:] + options[:1]
+            last_signature = signature
+
+            # Prefer options explicitly marked correct by the Rewards quiz payload.
+            chosen = None
+            for option in options:
+                correct = (
+                    (option.get_attribute("iscorrectoption") or "").lower() == "true"
+                    or "correctanswer" in (option.get_attribute("class") or "").lower()
+                )
+                if correct:
+                    chosen = option
+                    break
+
+            # Some quiz variants expose the correct answer as data in the page.
+            if chosen is None:
+                match = re.search(
+                    r'"correctAnswer"\s*:\s*"([^"]+)"',
+                    self.webdriver.page_source,
+                    re.IGNORECASE,
+                )
+                if match:
+                    correct_answer = match.group(1)
+                    for option in options:
+                        if option.get_attribute("data-option") == correct_answer:
+                            chosen = option
+                            break
+
+            if chosen is None:
+                chosen = options[0]
+
+            before = self.webdriver.page_source
+            try:
+                ActionChains(self.webdriver).move_to_element(chosen).click().perform()
+            except StaleElementReferenceException:
+                continue
+            self._wait_for_activity_change(before, 4)
+
+        logging.warning("[ACTIVITY] Quiz '%s' did not reach a completion state", item.title)
+        return False
+
+    def _click_locator_any(self, locators, timeout=8):
+        for locator in locators:
+            if self._click_locator(locator, timeout=timeout):
+                return True
+        return False
 
     def completeActivities(self):
         logging.info("[ACTIVITIES] Trying to complete all activities...")
@@ -166,6 +383,11 @@ class Activities:
                     "[ACTIVITY] No anchor found for '%s' (token=%r) — skipping",
                     cleanupActivityTitle(item.title), item.url_selector_token,
                 )
+            elif not self._wait_until_item_completed(item, timeout=8):
+                logging.warning(
+                    "[ACTIVITY] '%s' was opened but is still not marked complete",
+                    cleanupActivityTitle(item.title),
+                )
 
         logging.info("[ACTIVITIES] Done")
 
@@ -220,6 +442,28 @@ class Activities:
                 )
 
         logging.info("[MORE ACTIVITIES] Done")
+
+    def _wait_until_item_completed(self, item: DailySetItem, timeout=8) -> bool:
+        offer_id = item.offer_id
+
+        def completed(_driver):
+            try:
+                data = self.browser.utils.getDashboardData()
+                for candidate in data.todays_daily_set():
+                    if (
+                        (offer_id and candidate.offer_id == offer_id)
+                        or cleanupActivityTitle(candidate.title).lower()
+                        == cleanupActivityTitle(item.title).lower()
+                    ):
+                        return candidate.is_completed
+            except Exception:
+                return False
+            return False
+
+        try:
+            return WebDriverWait(self.webdriver, timeout, poll_frequency=1).until(completed)
+        except TimeoutException:
+            return False
 
     def _notify_incomplete(self):
         items_after = self.browser.utils.getActivities()
