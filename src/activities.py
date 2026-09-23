@@ -161,6 +161,23 @@ class Activities:
                 cleanupActivityTitle(item.title),
             )
 
+        try:
+            module_counts = {
+                ".btp_card": len(self.webdriver.find_elements(By.CSS_SELECTOR, ".btp_card")),
+                ".btom_card": len(self.webdriver.find_elements(By.CSS_SELECTOR, ".btom_card")),
+                ".btq_main": len(self.webdriver.find_elements(By.CSS_SELECTOR, ".btq_main")),
+                ".btp_choice": len(self.webdriver.find_elements(By.CSS_SELECTOR, ".btp_choice")),
+                ".btp_option_anchor": len(self.webdriver.find_elements(By.CSS_SELECTOR, ".btp_choice a[href]")),
+            }
+            logging.info(
+                "[ACTIVITY] Bing destination: url=%s | title=%s | modules=%s",
+                self.webdriver.current_url,
+                self.webdriver.title,
+                module_counts,
+            )
+        except Exception:
+            logging.debug("[ACTIVITY] Could not collect Bing module diagnostics", exc_info=True)
+
         # Daily Poll / Supersonic and other quiz-style cards require interaction
         # after the Rewards card opens. Complete the quiz/poll before closing the
         # destination tab; otherwise the dashboard card remains incomplete.
